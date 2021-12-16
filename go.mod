@@ -39,6 +39,9 @@ require (
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/ncw/go-acd v0.0.0-20201019170801-fe55f33415b1
 	github.com/ncw/swift/v2 v2.0.1
+	github.com/nspcc-dev/neo-go v0.98.0
+	github.com/nspcc-dev/neofs-api-go/v2 v2.11.0-pre.0.20211201134523-3604d96f3fe1
+	github.com/nspcc-dev/neofs-sdk-go v0.0.0-20211216161445-b1770ecb922f
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/pkg/sftp v1.13.5-0.20211228200725-31aac3e1878d
 	github.com/pmezard/go-difflib v1.0.0
@@ -76,7 +79,7 @@ require (
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/jlaffaye/ftp v0.0.0-20220524001917-dfa1e758f3af
-	github.com/pkg/xattr v0.4.7 // indirect
+	github.com/pkg/xattr v0.4.7
 	golang.org/x/mobile v0.0.0-20220518205345-8578da9835fd
 	golang.org/x/term v0.0.0-20220526004731-065cf7ba2467
 )
