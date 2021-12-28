@@ -60,9 +60,8 @@ func init() {
 				Help:    "NeoFS session expiration epoch",
 			},
 			{
-				Name:     "rpc_endpoint",
-				Help:     "Endpoint to connect to Neo rpc node",
-				Required: true,
+				Name: "rpc_endpoint",
+				Help: "Endpoint to connect to Neo rpc node",
 			},
 			{
 				Name:     "wallet",
@@ -128,7 +127,7 @@ type Options struct {
 	Password               string      `config:"password"`
 	PlacementPolicy        string      `config:"placement_policy"`
 	BasicACLStr            string      `config:"basic_acl"`
-	BasicACL               uint32
+	BasicACL               uint32      `config:"-"`
 }
 
 type Fs struct {
@@ -479,7 +478,7 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 		})
 	}
 
-	cnrID, err := f.parseContainer(containerStr)
+	cnrID, err := f.parseContainer(ctx, containerStr)
 	if err != nil {
 		return nil, fs.ErrorDirNotFound
 	}
@@ -566,7 +565,7 @@ func (o *Object) Remove(ctx context.Context) error {
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	containerStr, containerPath := bucket.Split(filepath.Join(f.root, remote))
 
-	cnrID, err := f.parseContainer(containerStr)
+	cnrID, err := f.parseContainer(ctx, containerStr)
 	if err != nil {
 		return nil, fs.ErrorDirNotFound
 	}
@@ -595,7 +594,7 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 		return nil
 	}
 
-	cnrID, err := f.parseContainer(containerStr)
+	cnrID, err := f.parseContainer(ctx, containerStr)
 	if err == nil {
 		return nil
 	}
@@ -628,7 +627,7 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 		return nil
 	}
 
-	cnrID, err := f.parseContainer(containerStr)
+	cnrID, err := f.parseContainer(ctx, containerStr)
 	if err != nil {
 		return fs.ErrorDirNotFound
 	}
@@ -651,7 +650,7 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 func (f *Fs) Purge(ctx context.Context, dir string) error {
 	containerStr, containerPath := bucket.Split(path.Join(f.root, dir))
 
-	cnrID, err := f.parseContainer(containerStr)
+	cnrID, err := f.parseContainer(ctx, containerStr)
 	if err != nil {
 		return nil
 	}
@@ -680,18 +679,34 @@ func (f *Fs) setRoot(root string) {
 	f.rootContainer, f.rootDirectory = bucket.Split(f.root)
 }
 
-func (f *Fs) parseContainer(containerName string) (*cid.ID, error) {
+func (f *Fs) parseContainer(ctx context.Context, containerName string) (*cid.ID, error) {
+	var err error
 	cnrID := cid.New()
-	if err := cnrID.Parse(containerName); err != nil {
-		if cnrID, err = f.resolver.ResolveContainerName(containerName); err != nil {
-			return nil, fmt.Errorf("couldn't resolve container '%s'", containerName)
+	if err = cnrID.Parse(containerName); err == nil {
+		return cnrID, nil
+	}
+
+	if f.resolver != nil {
+		if cnrID, err = f.resolver.ResolveContainerName(containerName); err == nil {
+			return cnrID, nil
+		}
+	} else {
+		if dirEntries, err := f.listContainers(ctx); err == nil {
+			for _, dirEntry := range dirEntries {
+				if dirEntry.Remote() == containerName {
+					if ider, ok := dirEntry.(fs.IDer); ok {
+						return cnrID, cnrID.Parse(ider.ID())
+					}
+				}
+			}
 		}
 	}
-	return cnrID, nil
+
+	return nil, fmt.Errorf("couldn't resolve container '%s'", containerName)
 }
 
 func (f *Fs) listEntries(ctx context.Context, containerStr, containerPath, directory string, recursive bool) (fs.DirEntries, error) {
-	cnrID, err := f.parseContainer(containerStr)
+	cnrID, err := f.parseContainer(ctx, containerStr)
 	if err != nil {
 		return nil, fs.ErrorDirNotFound
 	}
