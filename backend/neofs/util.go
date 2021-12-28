@@ -58,6 +58,9 @@ func createPool(ctx context.Context, key *keys.PrivateKey, cfg *Options) (pool.P
 }
 
 func createNnsResolver(ctx context.Context, cfg *Options) (resolver.NNSResolver, error) {
+	if cfg.RpcEndpoint == "" {
+		return nil, nil
+	}
 	cli, err := rpc.New(ctx, cfg.RpcEndpoint, rpc.Options{})
 	if err != nil {
 		return nil, err
