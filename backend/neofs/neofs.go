@@ -1,8 +1,8 @@
 package neofs
 
 import (
-	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -10,13 +10,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/nspcc-dev/neofs-sdk-go/client"
+	"github.com/nspcc-dev/neofs-sdk-go/acl"
 	"github.com/nspcc-dev/neofs-sdk-go/container"
 	cid "github.com/nspcc-dev/neofs-sdk-go/container/id"
 	"github.com/nspcc-dev/neofs-sdk-go/object"
+	oid "github.com/nspcc-dev/neofs-sdk-go/object/id"
 	"github.com/nspcc-dev/neofs-sdk-go/policy"
 	"github.com/nspcc-dev/neofs-sdk-go/pool"
 	"github.com/nspcc-dev/neofs-sdk-go/resolver"
@@ -116,18 +116,18 @@ const (
 
 // Options defines the configuration for this backend
 type Options struct {
-	NeofsEndpoint          string      `config:"neofs_endpoint"`
-	NeofsConnectionTimeout fs.Duration `config:"neofs_connection_timeout"`
-	NeofsRequestTimeout    fs.Duration `config:"neofs_request_timeout"`
-	NeofsRebalanceInterval fs.Duration `config:"neofs_rebalance_interval"`
-	NeofsSessionExpiration uint64      `config:"neofs_session_expiration"`
-	RpcEndpoint            string      `config:"rpc_endpoint"`
-	Wallet                 string      `config:"wallet"`
-	Address                string      `config:"address"`
-	Password               string      `config:"password"`
-	PlacementPolicy        string      `config:"placement_policy"`
-	BasicACLStr            string      `config:"basic_acl"`
-	BasicACL               uint32      `config:"-"`
+	NeofsEndpoint                  string       `config:"neofs_endpoint"`
+	NeofsConnectionTimeout         fs.Duration  `config:"neofs_connection_timeout"`
+	NeofsRequestTimeout            fs.Duration  `config:"neofs_request_timeout"`
+	NeofsRebalanceInterval         fs.Duration  `config:"neofs_rebalance_interval"`
+	NeofsSessionExpirationDuration uint64       `config:"neofs_session_expiration_duration"`
+	RpcEndpoint                    string       `config:"rpc_endpoint"`
+	Wallet                         string       `config:"wallet"`
+	Address                        string       `config:"address"`
+	Password                       string       `config:"password"`
+	PlacementPolicy                string       `config:"placement_policy"`
+	BasicACLStr                    string       `config:"basic_acl"`
+	BasicACL                       acl.BasicACL `config:"-"`
 }
 
 type Fs struct {
@@ -176,7 +176,7 @@ func NewFs(ctx context.Context, name string, root string, m configmap.Mapper) (f
 		return nil, err
 	}
 
-	opt.BasicACL, err = parseBasicACL(opt.BasicACLStr)
+	opt.BasicACL, err = acl.ParseBasicACL(opt.BasicACLStr)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't parse basic acl: %w", err)
 	}
@@ -295,7 +295,7 @@ func (o *Object) ID() string {
 	return o.OID().String()
 }
 
-func (o *Object) OID() *object.ID {
+func (o *Object) OID() *oid.ID {
 	return o.Object.ID()
 }
 
@@ -340,21 +340,22 @@ func (bc *BuffCloser) Close() error {
 }
 
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadCloser, error) {
-	var r *object.Range
+	var isRange bool
+	offset, length := uint64(0), o.PayloadSize()
 	fs.FixRangeOption(options, int64(o.PayloadSize()))
 	for _, option := range options {
 		switch option := option.(type) {
 		case *fs.RangeOption:
-			r = object.NewRange()
-			r.SetOffset(uint64(option.Start))
+			isRange = true
+			offset = uint64(option.Start)
 			if option.End < 0 {
 				option.End = int64(o.PayloadSize()) + option.End
 			}
-			r.SetLength(uint64(option.End - option.Start + 1))
+			length = uint64(option.End - option.Start + 1)
 		case *fs.SeekOption:
-			r = object.NewRange()
-			r.SetOffset(uint64(option.Offset))
-			r.SetLength(o.PayloadSize() - uint64(option.Offset))
+			isRange = true
+			offset = uint64(option.Offset)
+			length = o.PayloadSize() - uint64(option.Offset)
 		default:
 			if option.Mandatory() {
 				fs.Logf(o, "Unsupported mandatory option: %v", option)
@@ -363,25 +364,17 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadClo
 	}
 
 	addr := newAddress(o.ContainerID(), o.OID())
-	if r != nil {
-		p := new(client.RangeDataParams).WithAddress(addr).WithRange(r)
-		data, err := o.fs.pool.ObjectPayloadRangeData(ctx, p)
-		if err != nil {
-			return nil, err
-		}
-		return &BuffCloser{Reader: bytes.NewReader(data)}, nil
+	if isRange {
+		return o.fs.pool.ObjectRange(ctx, *addr, offset, length)
 	}
 
-	rCloser := &BuffCloser{}
-	var wg sync.WaitGroup
-	wg.Add(1)
-	p := new(client.GetObjectParams).WithAddress(addr).WithPayloadReaderHandler(func(reader io.Reader) {
-		rCloser.Reader = reader
-		wg.Done()
-	})
-	_, err := o.fs.pool.GetObject(ctx, p)
-	wg.Wait()
-	return rCloser, err
+	// we cannot use ObjectRange in this case because it panics if zero length range is requested
+	res, err := o.fs.pool.GetObject(ctx, *addr)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't get object %s: %w", addr, err)
+	}
+
+	return res.Payload, nil
 }
 
 func (f *Fs) Name() string {
@@ -512,22 +505,19 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 	}
 
 	rawObj := formRawObject(f.pool.OwnerID(), cnrID, filepath.Base(containerPath), headers)
-	p := new(client.PutObjectParams).WithObject(rawObj.Object()).WithPayloadReader(in)
 
-	oid, err := f.pool.PutObject(ctx, p)
+	objId, err := f.pool.PutObject(ctx, *rawObj.Object(), in)
 	if err != nil {
 		return nil, err
 	}
 
-	p2 := new(client.ObjectHeaderParams).WithAddress(newAddress(cnrID, oid))
-	obj, err := f.pool.GetObjectHeader(ctx, p2)
+	obj, err := f.pool.HeadObject(ctx, *newAddress(cnrID, objId))
 	if err != nil {
 		return nil, err
 	}
 
 	for _, id := range ids {
-		dp := new(client.DeleteObjectParams).WithAddress(newAddress(cnrID, id))
-		_ = f.pool.DeleteObject(ctx, dp)
+		_ = f.pool.DeleteObject(ctx, *newAddress(cnrID, &id))
 	}
 
 	return newObject(f, obj, ""), nil
@@ -558,8 +548,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 }
 
 func (o *Object) Remove(ctx context.Context) error {
-	p := new(client.DeleteObjectParams).WithAddress(newAddress(o.ContainerID(), o.OID()))
-	return o.fs.pool.DeleteObject(ctx, p)
+	return o.fs.pool.DeleteObject(ctx, *newAddress(o.ContainerID(), o.OID()))
 }
 
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
@@ -579,8 +568,7 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 		return nil, fs.ErrorObjectNotFound
 	}
 
-	param := new(client.ObjectHeaderParams).WithAddress(newAddress(cnrID, ids[0]))
-	obj, err := f.pool.GetObjectHeader(ctx, param)
+	obj, err := f.pool.HeadObject(ctx, *newAddress(cnrID, &ids[0]))
 	if err != nil {
 		return nil, err
 	}
@@ -664,9 +652,8 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 		return fs.ErrorDirNotFound
 	}
 
-	for _, oid := range ids {
-		dp := new(client.DeleteObjectParams).WithAddress(newAddress(cnrID, oid))
-		if err = f.pool.DeleteObject(ctx, dp); err != nil {
+	for _, id := range ids {
+		if err = f.pool.DeleteObject(ctx, *newAddress(cnrID, &id)); err != nil {
 			return err
 		}
 	}
@@ -722,8 +709,7 @@ func (f *Fs) listEntries(ctx context.Context, containerStr, containerPath, direc
 	objs := make(map[string]*Object)
 
 	for _, id := range ids {
-		param := new(client.ObjectHeaderParams).WithAddress(newAddress(cnrID, id))
-		obj, err := f.pool.GetObjectHeader(ctx, param)
+		obj, err := f.pool.HeadObject(ctx, *newAddress(cnrID, &id))
 		if err != nil {
 			return nil, err
 		}
@@ -778,7 +764,7 @@ func (f *Fs) listContainers(ctx context.Context) (fs.DirEntries, error) {
 	return res, nil
 }
 
-func (f *Fs) findObjectsFilePath(ctx context.Context, cnrID *cid.ID, filePath string) ([]*object.ID, error) {
+func (f *Fs) findObjectsFilePath(ctx context.Context, cnrID *cid.ID, filePath string) ([]oid.ID, error) {
 	return f.findObjects(ctx, cnrID, searchFilter{
 		Header:    attrFilePath,
 		Value:     filePath,
@@ -786,7 +772,7 @@ func (f *Fs) findObjectsFilePath(ctx context.Context, cnrID *cid.ID, filePath st
 	})
 }
 
-func (f *Fs) findObjectsPrefix(ctx context.Context, cnrID *cid.ID, prefix string) ([]*object.ID, error) {
+func (f *Fs) findObjectsPrefix(ctx context.Context, cnrID *cid.ID, prefix string) ([]oid.ID, error) {
 	return f.findObjects(ctx, cnrID, searchFilter{
 		Header:    attrFilePath,
 		Value:     prefix,
@@ -794,7 +780,7 @@ func (f *Fs) findObjectsPrefix(ctx context.Context, cnrID *cid.ID, prefix string
 	})
 }
 
-func (f *Fs) findObjects(ctx context.Context, cnrID *cid.ID, filters ...searchFilter) ([]*object.ID, error) {
+func (f *Fs) findObjects(ctx context.Context, cnrID *cid.ID, filters ...searchFilter) ([]oid.ID, error) {
 	sf := object.NewSearchFilters()
 	sf.AddRootFilter()
 
@@ -802,9 +788,38 @@ func (f *Fs) findObjects(ctx context.Context, cnrID *cid.ID, filters ...searchFi
 		sf.AddFilter(filter.Header, filter.Value, filter.MatchType)
 	}
 
-	p := new(client.SearchObjectParams).WithContainerID(cnrID).WithSearchFilters(sf)
+	return f.searchObjects(ctx, cnrID, sf)
+}
 
-	return f.pool.SearchObject(ctx, p)
+func (f *Fs) searchObjects(ctx context.Context, cnrID *cid.ID, filters object.SearchFilters) ([]oid.ID, error) {
+	res, err := f.pool.SearchObjects(ctx, *cnrID, filters)
+	if err != nil {
+		return nil, fmt.Errorf("init searching using client: %w", err)
+	}
+
+	defer res.Close()
+
+	var num, read int
+	buf := make([]oid.ID, 10)
+
+	for {
+		num, err = res.Read(buf[read:])
+		if num > 0 {
+			read += num
+			buf = append(buf, oid.ID{})
+			buf = buf[:cap(buf)]
+		}
+
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
+			return nil, fmt.Errorf("couldn't read found objects: %w", err)
+		}
+	}
+
+	return buf[:read], nil
 }
 
 // Check the interfaces are satisfied
