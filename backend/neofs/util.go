@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/nspcc-dev/neo-go/cli/flags"
@@ -12,46 +11,27 @@ import (
 	rpc "github.com/nspcc-dev/neo-go/pkg/rpc/client"
 	"github.com/nspcc-dev/neo-go/pkg/wallet"
 	cntnr "github.com/nspcc-dev/neofs-api-go/v2/container"
-	"github.com/nspcc-dev/neofs-sdk-go/acl"
 	"github.com/nspcc-dev/neofs-sdk-go/container"
 	cid "github.com/nspcc-dev/neofs-sdk-go/container/id"
 	"github.com/nspcc-dev/neofs-sdk-go/object"
+	"github.com/nspcc-dev/neofs-sdk-go/object/address"
+	oid "github.com/nspcc-dev/neofs-sdk-go/object/id"
 	"github.com/nspcc-dev/neofs-sdk-go/owner"
 	"github.com/nspcc-dev/neofs-sdk-go/pool"
 	"github.com/nspcc-dev/neofs-sdk-go/resolver"
 	"github.com/rclone/rclone/fs"
 )
 
-func parseBasicACL(basicACL string) (uint32, error) {
-	switch basicACL {
-	case "public-read-write":
-		return acl.PublicBasicRule, nil
-	case "private":
-		return acl.PrivateBasicRule, nil
-	case "public-read":
-		return acl.ReadOnlyBasicRule, nil
-	default:
-		basicACL = strings.Trim(strings.ToLower(basicACL), "0x")
-
-		value, err := strconv.ParseUint(basicACL, 16, 32)
-		if err != nil {
-			return 0, fmt.Errorf("can't parse basic ACL: %s", basicACL)
-		}
-
-		return uint32(value), nil
-	}
-}
-
 func createPool(ctx context.Context, key *keys.PrivateKey, cfg *Options) (pool.Pool, error) {
 	pb := new(pool.Builder)
 	pb.AddNode(cfg.NeofsEndpoint, 1, 1)
 
 	opts := &pool.BuilderOptions{
-		Key:                     &key.PrivateKey,
-		NodeConnectionTimeout:   time.Duration(cfg.NeofsConnectionTimeout),
-		NodeRequestTimeout:      time.Duration(cfg.NeofsRequestTimeout),
-		ClientRebalanceInterval: time.Duration(cfg.NeofsRebalanceInterval),
-		SessionExpirationEpoch:  cfg.NeofsSessionExpiration,
+		Key:                       &key.PrivateKey,
+		NodeConnectionTimeout:     time.Duration(cfg.NeofsConnectionTimeout),
+		NodeRequestTimeout:        time.Duration(cfg.NeofsRequestTimeout),
+		ClientRebalanceInterval:   time.Duration(cfg.NeofsRebalanceInterval),
+		SessionExpirationDuration: cfg.NeofsSessionExpirationDuration,
 	}
 
 	return pb.Build(ctx, opts)
@@ -94,10 +74,10 @@ func getAccount(cfg *Options) (*wallet.Account, error) {
 	return acc, nil
 }
 
-func newAddress(cnrID *cid.ID, oid *object.ID) *object.Address {
-	addr := object.NewAddress()
+func newAddress(cnrID *cid.ID, id *oid.ID) *address.Address {
+	addr := address.NewAddress()
 	addr.SetContainerID(cnrID)
-	addr.SetObjectID(oid)
+	addr.SetObjectID(id)
 	return addr
 }
 
