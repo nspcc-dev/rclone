@@ -3,53 +3,53 @@ package neofs
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/nspcc-dev/neo-go/cli/flags"
 	"github.com/nspcc-dev/neo-go/pkg/crypto/keys"
-	rpc "github.com/nspcc-dev/neo-go/pkg/rpc/client"
 	"github.com/nspcc-dev/neo-go/pkg/wallet"
-	cntnr "github.com/nspcc-dev/neofs-api-go/v2/container"
 	"github.com/nspcc-dev/neofs-sdk-go/container"
 	cid "github.com/nspcc-dev/neofs-sdk-go/container/id"
+	resolver "github.com/nspcc-dev/neofs-sdk-go/ns"
 	"github.com/nspcc-dev/neofs-sdk-go/object"
-	"github.com/nspcc-dev/neofs-sdk-go/object/address"
 	oid "github.com/nspcc-dev/neofs-sdk-go/object/id"
-	"github.com/nspcc-dev/neofs-sdk-go/owner"
 	"github.com/nspcc-dev/neofs-sdk-go/pool"
-	"github.com/nspcc-dev/neofs-sdk-go/resolver"
+	"github.com/nspcc-dev/neofs-sdk-go/user"
 	"github.com/rclone/rclone/fs"
 )
 
-func createPool(ctx context.Context, key *keys.PrivateKey, cfg *Options) (pool.Pool, error) {
-	pb := new(pool.Builder)
-	pb.AddNode(cfg.NeofsEndpoint, 1, 1)
+func createPool(ctx context.Context, key *keys.PrivateKey, cfg *Options) (*pool.Pool, error) {
+	var prm pool.InitParameters
+	prm.SetKey(&key.PrivateKey)
+	prm.SetNodeDialTimeout(time.Duration(cfg.NeofsConnectionTimeout))
+	prm.SetHealthcheckTimeout(time.Duration(cfg.NeofsRequestTimeout))
+	prm.SetClientRebalanceInterval(time.Duration(cfg.NeofsRebalanceInterval))
+	prm.SetSessionExpirationDuration(cfg.NeofsSessionExpirationDuration)
+	prm.AddNode(pool.NewNodeParam(1, cfg.NeofsEndpoint, 1))
 
-	opts := &pool.BuilderOptions{
-		Key:                       &key.PrivateKey,
-		NodeConnectionTimeout:     time.Duration(cfg.NeofsConnectionTimeout),
-		NodeRequestTimeout:        time.Duration(cfg.NeofsRequestTimeout),
-		ClientRebalanceInterval:   time.Duration(cfg.NeofsRebalanceInterval),
-		SessionExpirationDuration: cfg.NeofsSessionExpirationDuration,
+	p, err := pool.NewPool(prm)
+	if err != nil {
+		return nil, fmt.Errorf("create pool: %w", err)
 	}
 
-	return pb.Build(ctx, opts)
+	if err = p.Dial(ctx); err != nil {
+		return nil, fmt.Errorf("dial pool: %w", err)
+	}
+
+	return p, nil
 }
 
-func createNnsResolver(ctx context.Context, cfg *Options) (resolver.NNSResolver, error) {
+func createNNSResolver(cfg *Options) (*resolver.NNS, error) {
 	if cfg.RpcEndpoint == "" {
 		return nil, nil
 	}
-	cli, err := rpc.New(ctx, cfg.RpcEndpoint, rpc.Options{})
-	if err != nil {
-		return nil, err
-	}
-	if err = cli.Init(); err != nil {
-		return nil, err
+
+	var nns resolver.NNS
+	if err := nns.Dial(cfg.RpcEndpoint); err != nil {
+		return nil, fmt.Errorf("dial NNS resolver: %w", err)
 	}
 
-	return resolver.NewNNSResolver(cli)
+	return &nns, nil
 }
 
 func getAccount(cfg *Options) (*wallet.Account, error) {
@@ -74,51 +74,42 @@ func getAccount(cfg *Options) (*wallet.Account, error) {
 	return acc, nil
 }
 
-func newAddress(cnrID *cid.ID, id *oid.ID) *address.Address {
-	addr := address.NewAddress()
-	addr.SetContainerID(cnrID)
-	addr.SetObjectID(id)
+func newAddress(cnrID cid.ID, objID oid.ID) oid.Address {
+	var addr oid.Address
+	addr.SetContainer(cnrID)
+	addr.SetObject(objID)
 	return addr
 }
 
-func formRawObject(own *owner.ID, cnrID *cid.ID, name string, header map[string]string) *object.RawObject {
-	attributes := make([]*object.Attribute, 0, 1+len(header))
+func formObject(own *user.ID, cnrID cid.ID, name string, header map[string]string) *object.Object {
+	attributes := make([]object.Attribute, 0, 1+len(header))
 	filename := object.NewAttribute()
 	filename.SetKey(object.AttributeFileName)
 	filename.SetValue(name)
 
-	attributes = append(attributes, filename)
+	attributes = append(attributes, *filename)
 
 	for key, val := range header {
 		attr := object.NewAttribute()
 		attr.SetKey(key)
 		attr.SetValue(val)
-		attributes = append(attributes, attr)
+		attributes = append(attributes, *attr)
 	}
 
-	raw := object.NewRaw()
-	raw.SetOwnerID(own)
-	raw.SetContainerID(cnrID)
-	raw.SetAttributes(attributes...)
+	obj := object.New()
+	obj.SetOwnerID(own)
+	obj.SetContainerID(cnrID)
+	obj.SetAttributes(attributes...)
 
-	return raw
+	return obj
 }
 
-func newDir(cnrID *cid.ID, cnr *container.Container) *fs.Dir {
-	remote := cnrID.String()
-	timestamp := time.Time{}
-	for _, attr := range cnr.Attributes() {
-		if attr.Key() == container.AttributeTimestamp {
-			value, err := strconv.ParseInt(attr.Value(), 10, 64)
-			if err != nil {
-				fs.Logf("couldn't parse timestamp '%s': %s", attr.Value(), err.Error())
-				continue
-			}
-			timestamp = time.Unix(value, 0)
-		}
-		if attr.Key() == cntnr.SysAttributeName {
-			remote = attr.Value()
-		}
+func newDir(cnrID cid.ID, cnr *container.Container) *fs.Dir {
+	remote := cnrID.EncodeToString()
+	timestamp := container.CreatedAt(*cnr)
+
+	if domain := container.ReadDomain(*cnr); domain.Name() != "" {
+		remote = domain.Name()
 	}
 
 	dir := fs.NewDir(remote, timestamp)
