@@ -104,11 +104,11 @@ func formObject(own *user.ID, cnrID cid.ID, name string, header map[string]strin
 	return obj
 }
 
-func newDir(cnrID cid.ID, cnr *container.Container) *fs.Dir {
+func newDir(cnrID cid.ID, cnr container.Container) *fs.Dir {
 	remote := cnrID.EncodeToString()
-	timestamp := container.CreatedAt(*cnr)
+	timestamp := container.CreatedAt(cnr)
 
-	if domain := container.ReadDomain(*cnr); domain.Name() != "" {
+	if domain := container.ReadDomain(cnr); domain.Name() != "" {
 		remote = domain.Name()
 	}
 
