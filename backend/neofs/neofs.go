@@ -238,7 +238,7 @@ func NewFs(ctx context.Context, name string, root string, m configmap.Mapper) (f
 	return f, nil
 }
 
-func newObject(f *Fs, obj *object.Object, container string) *Object {
+func newObject(f *Fs, obj object.Object, container string) *Object {
 	// we should not include rootDirectory into remote name
 	prefix := f.rootDirectory
 	if prefix != "" {
@@ -248,7 +248,7 @@ func newObject(f *Fs, obj *object.Object, container string) *Object {
 	objID, _ := obj.ID()
 
 	objInfo := &Object{
-		Object: obj,
+		Object: &obj,
 		fs:     f,
 		name:   objID.EncodeToString(),
 	}
@@ -382,7 +382,11 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadClo
 		prm.SetOffset(offset)
 		prm.SetLength(length)
 
-		return o.fs.pool.ObjectRange(ctx, prm)
+		rangeReader, err := o.fs.pool.ObjectRange(ctx, prm)
+		if err != nil {
+			return nil, err
+		}
+		return &rangeReader, nil
 	}
 
 	var prm pool.PrmObjectGet
@@ -536,7 +540,7 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 	}
 
 	var prmHead pool.PrmObjectHead
-	prmHead.SetAddress(newAddress(cnrID, *objID))
+	prmHead.SetAddress(newAddress(cnrID, objID))
 
 	obj, err := f.pool.HeadObject(ctx, prmHead)
 	if err != nil {

@@ -40,7 +40,7 @@ require (
 	github.com/ncw/go-acd v0.0.0-20201019170801-fe55f33415b1
 	github.com/ncw/swift/v2 v2.0.1
 	github.com/nspcc-dev/neo-go v0.99.1
-	github.com/nspcc-dev/neofs-sdk-go v1.0.0-rc.6
+	github.com/nspcc-dev/neofs-sdk-go v1.0.0-rc.6.0.20220829114550-ee92df32032e
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/pkg/sftp v1.13.5-0.20211228200725-31aac3e1878d
 	github.com/pmezard/go-difflib v1.0.0
