@@ -37,8 +37,26 @@ func init() {
 		Options: []fs.Option{
 			{
 				Name:     "neofs_endpoint",
-				Help:     "Endpoint to connect to NeoFS node",
+				Help:     "Endpoints to connect to NeoFS node",
 				Required: true,
+				Examples: []fs.OptionExample{
+					{
+						Value: "s01.neofs.devenv:8080",
+						Help:  "One endpoint.",
+					},
+					{
+						Value: "s01.neofs.devenv:8080 s02.neofs.devenv:8080",
+						Help:  "Multiple endpoints to form pool.",
+					},
+					{
+						Value: "s01.neofs.devenv:8080,1 s02.neofs.devenv:8080,2",
+						Help:  "Multiple endpoints with priority (less value is higher priority). Until s01 is healthy all request will be send to it.",
+					},
+					{
+						Value: "s01.neofs.devenv:8080,1,1 s02.neofs.devenv:8080,2,1 s03.neofs.devenv:8080,2,9",
+						Help:  "Multiple endpoints with priority and weights. After s01 is unhealthy requests will be send to s02 and s03 in proportions 10% and 90% respectively.",
+					},
+				},
 			},
 			{
 				Name:    "neofs_connection_timeout",
